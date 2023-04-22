@@ -61,16 +61,14 @@
         public KernelExports(long[] addresses, bool isBeta = false)
         {
             Addresses = addresses ?? throw new ArgumentNullException(nameof(addresses));
-
-            // TODO: beta (DVT3) ordinals which might change between versions and require this logic be reworked
-            HalReadSMBusValue = addresses[isBeta ? 0 : 45];
-            NtClose = addresses[isBeta ? 0 : 187];
-            NtDeviceIoControlFile = addresses[isBeta ? 0 : 196];
-            NtOpenFile = addresses[isBeta ? 0 : 202];
-            NtReadFile = addresses[isBeta ? 0 : 219];
-            RtlFreeAnsiString = addresses[isBeta ? 0 : 286];
-            RtlInitAnsiString = addresses[isBeta ? 0 : 289];
-            XboxKrnlVersion = addresses[isBeta ? 0 : 324];
+            HalReadSMBusValue = addresses[isBeta ? 339 : 45];
+            NtClose = addresses[isBeta ? 183 : 187];
+            NtDeviceIoControlFile = addresses[isBeta ? 192 : 196];
+            NtOpenFile = addresses[isBeta ? 199 : 202];
+            NtReadFile = addresses[isBeta ? 216 : 219];
+            RtlFreeAnsiString = addresses[isBeta ? 282 : 286];
+            RtlInitAnsiString = addresses[isBeta ? 285 : 289];
+            XboxKrnlVersion = addresses[isBeta ? 316 : 324];
         }
     }
 }

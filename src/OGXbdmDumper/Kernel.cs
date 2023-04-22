@@ -20,6 +20,11 @@ namespace OGXbdmDumper
         public const string Name = "xboxkrnl.exe";
 
         /// <summary>
+        /// Indicates whether this is a DVT3 beta kernel or not.
+        /// </summary>
+        public bool IsBeta { get; private set; }
+
+        /// <summary>
         /// The kernel module information. Note: Internally caches result for future use.
         /// </summary>
         public readonly Module? Module;
@@ -57,6 +62,7 @@ namespace OGXbdmDumper
                     long peBase = _xbox.Memory.ReadUInt32(Address + 0x3C);
                     long dataDirectory = _xbox.Memory.ReadUInt32(Address + peBase + 0x78);
                     int exportCount = _xbox.Memory.ReadInt32(Address + dataDirectory + 0x14);
+                    IsBeta = exportCount < 360; // TODO: guestimate, dvt4/retail seemed to have at least 366 whereas dvt3/beta around 345
                     long exportAddress = Address + _xbox.Memory.ReadUInt32(Address + dataDirectory + 0x1C);
                     byte[] exportBytes = _xbox.Memory.ReadBytes(exportAddress, exportCount * sizeof(uint));
 
@@ -72,8 +78,7 @@ namespace OGXbdmDumper
                     }
 
                     // generate exports
-                    // TODO: beta detection
-                    _exports = new KernelExports(addresses);
+                    _exports = new KernelExports(addresses, IsBeta);
                 }
                 return _exports;
             }
