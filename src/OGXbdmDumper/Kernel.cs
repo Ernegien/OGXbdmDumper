@@ -11,9 +11,6 @@ namespace OGXbdmDumper
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
         private readonly Xbox _xbox;
 
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private KernelExports? _exports;
-
         /// <summary>
         /// The file name.
         /// </summary>
@@ -27,7 +24,7 @@ namespace OGXbdmDumper
         /// <summary>
         /// The kernel module information. Note: Internally caches result for future use.
         /// </summary>
-        public readonly Module? Module;
+        public readonly Module Module;
 
         /// <summary>
         /// The kernel image size. NOTE: May not be contiguous memory.
@@ -47,42 +44,12 @@ namespace OGXbdmDumper
         /// <summary>
         /// The Xbox kernel build version.
         /// </summary>
-        public Version Version => _xbox.Memory.ReadInt32(Exports.XboxKrnlVersion).ToVersion();
+        public Version Version { get; private set; }
 
         /// <summary>
-        /// The kernel exports. Note: Internally caches result for future use.
+        /// The kernel exports.
         /// </summary>
-        public KernelExports Exports
-        {
-            get
-            {
-                if (_exports == null)
-                {
-                    // gets export table of offsets relative to kernel base address
-                    long peBase = _xbox.Memory.ReadUInt32(Address + 0x3C);
-                    long dataDirectory = _xbox.Memory.ReadUInt32(Address + peBase + 0x78);
-                    int exportCount = _xbox.Memory.ReadInt32(Address + dataDirectory + 0x14);
-                    IsBeta = exportCount < 360; // TODO: guestimate, dvt4/retail seemed to have at least 366 whereas dvt3/beta around 345
-                    long exportAddress = Address + _xbox.Memory.ReadUInt32(Address + dataDirectory + 0x1C);
-                    byte[] exportBytes = _xbox.Memory.ReadBytes(exportAddress, exportCount * sizeof(uint));
-
-                    // converts them to absolute addresses
-                    long[] addresses = new long[exportCount + 1];
-                    for (int i = 0; i < exportCount; i++)
-                    {
-                        long offset = BitConverter.ToUInt32(exportBytes, i * 4);
-                        if (offset != 0)
-                        {
-                            addresses[i + 1] = Address + offset;
-                        }
-                    }
-
-                    // generate exports
-                    _exports = new KernelExports(addresses, IsBeta);
-                }
-                return _exports;
-            }
-        }
+        public KernelExports Exports { get; private set; }
 
         /// <summary>
         /// Initializes communication with the Xbox kernel.
@@ -90,8 +57,38 @@ namespace OGXbdmDumper
         /// <param name="xbox"></param>
         public Kernel(Xbox xbox)
         {
-            _xbox = xbox ?? throw new ArgumentNullException(nameof(xbox));
-            Module = _xbox.Modules.Find(m => m.Name == Name);
+            _xbox = xbox ??
+                throw new ArgumentNullException(nameof(xbox));
+
+            Module = xbox.Modules.Find(m => m.Name == Name) ??
+                throw new NullReferenceException(string.Format("Failed to load {0} module information!", Name));
+
+            // gets export table of offsets relative to kernel base address
+            long peBase = xbox.Memory.ReadUInt32(Address + 0x3C);
+            long dataDirectory = xbox.Memory.ReadUInt32(Address + peBase + 0x78);
+            int exportCount = xbox.Memory.ReadInt32(Address + dataDirectory + 0x14);
+            long exportAddress = Address + xbox.Memory.ReadUInt32(Address + dataDirectory + 0x1C);
+            byte[] exportBytes = xbox.Memory.ReadBytes(exportAddress, exportCount * sizeof(uint));
+
+            // converts them to absolute addresses
+            long[] addresses = new long[exportCount + 1];
+            for (int i = 0; i < exportCount; i++)
+            {
+                long offset = BitConverter.ToUInt32(exportBytes, i * 4);
+                if (offset != 0)
+                {
+                    addresses[i + 1] = Address + offset;
+                }
+            }
+
+            // TODO: guestimate, dvt4/retail seemed to have at least 366 whereas dvt3/beta around 345
+            IsBeta = exportCount < 360;
+
+            // generate exports
+            Exports = new KernelExports(addresses, IsBeta);
+
+            // get the version
+            Version = xbox.Memory.ReadInt32(Exports.XboxKrnlVersion).ToVersion();
         }
 
         #region Exports
