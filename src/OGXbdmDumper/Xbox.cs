@@ -339,11 +339,32 @@ namespace OGXbdmDumper
         }
 
         /// <summary>
-        /// Original Xbox Debug Monitor runtime patches. Enables remote code execution.
+        /// Original Xbox Debug Monitor runtime patches.
+        /// Prevents crashdumps from being written to the HDD and enables remote code execution.
         /// </summary>
         /// <param name="target"></param>
         private MemoryRegion PatchXbdm(Xbox target)
         {
+            // spin:
+            // jmp spin
+            // int 3
+            var spinBytes = new byte[] { 0xEB, 0xFE, 0xCC };
+
+            // prevent crashdumps from being written to the hard drive by making it spin instead
+            long readWriteOneSectorAddress = target.Signatures["ReadWriteOneSector"];
+            long writeSMBusByteAddress = target.Signatures["WriteSMBusByte"];
+            if (readWriteOneSectorAddress > 0)
+            {
+
+                target.WriteMemory(readWriteOneSectorAddress, spinBytes);
+            }
+            else if (writeSMBusByteAddress > 0)
+            {
+                // this will prevent the LED state from changing upon crash
+                target.WriteMemory(writeSMBusByteAddress, spinBytes);
+            }
+            else throw new Exception("Failed to disable crashdump!");
+
             // store patches in the reloc section
             var relocInfo = target.GetModules().FirstOrDefault(m => m.Name.Equals("xbdm.dll")).GetSection(".reloc");
 
@@ -583,6 +604,32 @@ namespace OGXbdmDumper
                     var resolver = new SignatureResolver
                     {
                         // NOTE: ensure patterns don't overlap with any hooks! that way we don't have to cache any states; simplicity at the expense of slightly less perf on connect
+
+                        // universal pattern
+                        new SodmaSignature("ReadWriteOneSector")
+                        { 
+                            // mov     ebp, esp
+                            new OdmPattern(0x1, new byte[] { 0x8B, 0xEC }),
+
+                            // mov     dx, 1F6h
+                            new OdmPattern(0x3, new byte[] { 0x66, 0xBA, 0xF6, 0x01 }),
+
+                            // mov     al, 0A0h
+                            new OdmPattern(0x7, new byte[] { 0xB0, 0xA0 })
+                        },
+
+                        // universal pattern
+                        new SodmaSignature("WriteSMBusByte")
+                        { 
+                            // mov     al, 20h
+                            new OdmPattern(0x0, new byte[] { 0xB0, 0x20 }),
+
+                            // mov     dx, 0C004h
+                            new OdmPattern(0x2, new byte[] { 0x66, 0xBA, 0x04, 0xC0 }),
+
+                            // out     dx, al
+                            new OdmPattern(0x6, new byte[] { 0xEE })
+                        },
 
                         // universal pattern
                         new SodmaSignature("FGetDwParam")
