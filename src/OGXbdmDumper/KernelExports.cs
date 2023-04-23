@@ -5,11 +5,6 @@
     /// </summary>
     public class KernelExports
     {
-        /// <summary>
-        /// The Kernel export addresses;
-        /// </summary>
-        public long[] Addresses { get; }
-
         #region Exports
 
         /// <summary>
@@ -60,7 +55,6 @@
         /// <param name="addresses"></param>
         public KernelExports(long[] addresses, bool isBeta = false)
         {
-            Addresses = addresses ?? throw new ArgumentNullException(nameof(addresses));
             HalReadSMBusValue = addresses[isBeta ? 339 : 45];
             NtClose = addresses[isBeta ? 183 : 187];
             NtDeviceIoControlFile = addresses[isBeta ? 192 : 196];
