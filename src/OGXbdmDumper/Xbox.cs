@@ -352,16 +352,14 @@ namespace OGXbdmDumper
             var spinBytes = new byte[] { 0xEB, 0xFE, 0xCC };
 
             // prevent crashdumps from being written to the hard drive by making it spin instead
-            long readWriteOneSectorAddress = target.Signatures["ReadWriteOneSector"];
-            long writeSMBusByteAddress = target.Signatures["WriteSMBusByte"];
-            if (readWriteOneSectorAddress > 0)
+            if (target.Signatures.ContainsKey("ReadWriteOneSector"))
             {
-                target.WriteMemory(readWriteOneSectorAddress + 9, spinBytes);
+                target.WriteMemory(target.Signatures["ReadWriteOneSector"] + 9, spinBytes);
             }
-            else if (writeSMBusByteAddress > 0)
+            else if (target.Signatures.ContainsKey("WriteSMBusByte"))
             {
                 // this will prevent the LED state from changing upon crash
-                target.WriteMemory(writeSMBusByteAddress + 6, spinBytes);
+                target.WriteMemory(target.Signatures["WriteSMBusByte"] + 6, spinBytes);
             }
             else throw new Exception("Failed to disable crashdump!");
 
