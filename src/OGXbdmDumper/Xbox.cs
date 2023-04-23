@@ -510,6 +510,69 @@ namespace OGXbdmDumper
             #endregion
         }
 
+        public string GetDisassembly(long address, int length, bool tabPrefix = true, bool showBytes = false)
+        {
+            // read code from xbox memory
+            byte[] code = Memory.ReadBytes(address, length);
+
+            // disassemble valid instructions
+            var decoder = Iced.Intel.Decoder.Create(32, code);
+            decoder.IP = (ulong)address;
+            var instructions = new List<Instruction>();
+            while (decoder.IP < decoder.IP + (uint)code.Length)
+            {
+                var insn = decoder.Decode();
+                if (insn.IsInvalid)
+                    break;
+                instructions.Add(insn);
+            }
+
+            // formatting options
+            var formatter = new MasmFormatter();
+            formatter.Options.FirstOperandCharIndex = 8;
+            formatter.Options.SpaceAfterOperandSeparator = true;
+
+            // convert to string
+            var output = new StringOutput();
+            var disassembly = new StringBuilder();
+            bool firstInstruction = true;
+            foreach (var instr in instructions)
+            {
+                // skip newline for the first instruction
+                if (firstInstruction)
+                {
+                    firstInstruction = false;
+                } else disassembly.AppendLine();
+
+                // optionally indent
+                if (tabPrefix)
+                {
+                    disassembly.Append('\t');
+                }
+
+                // output address
+                disassembly.Append(instr.IP.ToString("X8"));
+                disassembly.Append(" ");
+
+                // optionally output instruction bytes
+                if (showBytes)
+                {
+                    for (int i = 0; i < instr.Length; i++)
+                        disassembly.Append(code[(int)(instr.IP - (ulong)address) + i].ToString("X2"));
+                    int missingBytes = 10 - instr.Length;
+                    for (int i = 0; i < missingBytes; i++)
+                        disassembly.Append("  ");
+                    disassembly.Append(" ");
+                }
+
+                // output the decoded instruction
+                formatter.Format(instr, output);
+                disassembly.Append(output.ToStringAndReset());
+            }
+            
+            return disassembly.ToString();
+        }
+
         public Dictionary<string, long> Signatures
         {
             get
