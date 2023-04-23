@@ -345,6 +345,7 @@ namespace OGXbdmDumper
         /// <param name="target"></param>
         private MemoryRegion PatchXbdm(Xbox target)
         {
+            // the spin routine to be patched in after the signature patterns
             // spin:
             // jmp spin
             // int 3
@@ -355,13 +356,12 @@ namespace OGXbdmDumper
             long writeSMBusByteAddress = target.Signatures["WriteSMBusByte"];
             if (readWriteOneSectorAddress > 0)
             {
-
-                target.WriteMemory(readWriteOneSectorAddress, spinBytes);
+                target.WriteMemory(readWriteOneSectorAddress + 9, spinBytes);
             }
             else if (writeSMBusByteAddress > 0)
             {
                 // this will prevent the LED state from changing upon crash
-                target.WriteMemory(writeSMBusByteAddress, spinBytes);
+                target.WriteMemory(writeSMBusByteAddress + 6, spinBytes);
             }
             else throw new Exception("Failed to disable crashdump!");
 
@@ -626,9 +626,6 @@ namespace OGXbdmDumper
 
                             // mov     dx, 0C004h
                             new OdmPattern(0x2, new byte[] { 0x66, 0xBA, 0x04, 0xC0 }),
-
-                            // out     dx, al
-                            new OdmPattern(0x6, new byte[] { 0xEE })
                         },
 
                         // universal pattern
