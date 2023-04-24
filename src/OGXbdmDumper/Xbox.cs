@@ -67,7 +67,6 @@ namespace OGXbdmDumper
 
             // enable remote code execution and use the remainder reloc section as scratch
             // TODO: RPC virtual memory allocation for a larger buffer
-            Log.Information("Patching xbdm memory to enable remote code execution.");
             ScratchBuffer = PatchXbdm(this);
             Log.Information("Using {0} bytes of scratch space at address {1}.",
                 ScratchBuffer.Size.ToHexString(), ScratchBuffer.Address.ToHexString());
@@ -335,7 +334,7 @@ namespace OGXbdmDumper
             }
 
             var returnValues = Connection.ParseKvpResponse(Session.SendCommandStrict(command.ToString()).Message);
-            return new CallResult((uint)returnValues["eax"], (uint)returnValues["st0"], (uint)returnValues["cid"]);
+            return new CallResult((uint)returnValues["eax"]);
         }
 
         /// <summary>
@@ -352,6 +351,7 @@ namespace OGXbdmDumper
             var spinBytes = new byte[] { 0xEB, 0xFE, 0xCC };
 
             // prevent crashdumps from being written to the hard drive by making it spin instead
+            Log.Information("Disabling crashdump functionality.");
             if (target.Signatures.ContainsKey("ReadWriteOneSector"))
             {
                 target.WriteMemory(target.Signatures["ReadWriteOneSector"] + 9, spinBytes);
@@ -359,9 +359,11 @@ namespace OGXbdmDumper
             else if (target.Signatures.ContainsKey("WriteSMBusByte"))
             {
                 // this will prevent the LED state from changing upon crash
-                target.WriteMemory(target.Signatures["WriteSMBusByte"] + 6, spinBytes);
+                target.WriteMemory(target.Signatures["WriteSMBusByte"] + 9, spinBytes);
             }
             else throw new Exception("Failed to disable crashdump!");
+
+            Log.Information("Patching xbdm memory to enable remote code execution.");
 
             // store patches in the reloc section
             var relocInfo = target.GetModules().FirstOrDefault(m => m.Name.Equals("xbdm.dll")).GetSection(".reloc");
@@ -391,20 +393,8 @@ namespace OGXbdmDumper
             var argFormatBytes = Encoding.ASCII.GetBytes("arg%01d\0");
             asm.db(argFormatBytes);
 
-            uint argEcxStringAddress = argFormatStringAddress + (uint)argFormatBytes.Length;
-            var argEcxBytes = Encoding.ASCII.GetBytes("ecx\0");
-            asm.db(argEcxBytes);
-
-            uint argEdxStringAddress = argEcxStringAddress + (uint)argEcxBytes.Length;
-            var argEdxBytes = Encoding.ASCII.GetBytes("edx\0");
-            asm.db(argEdxBytes);
-
-            uint argXmmStringAddress = argEdxStringAddress + (uint)argEdxBytes.Length;
-            var argXmmBytes = Encoding.ASCII.GetBytes("xmm%01d\0");
-            asm.db(argXmmBytes);
-
-            uint returnFormatAddress = argXmmStringAddress + (uint)argXmmBytes.Length;
-            var returnFormatBytes = Encoding.ASCII.GetBytes("eax=0x%X st0=0x%X cid=0x%X\0");
+            uint returnFormatAddress = argFormatStringAddress + (uint)argFormatBytes.Length;
+            var returnFormatBytes = Encoding.ASCII.GetBytes("eax=0x%X\0");
             asm.db(returnFormatBytes);
             asm.Label(ref dataEndLabel);
 
@@ -414,10 +404,14 @@ namespace OGXbdmDumper
             asm.sub(esp, 0x10); // carve out space for local temp variables
             asm.pushad();
 
+            // disable write protection globally, otherwise checked kernel calls may fail when writing to the default scratch space
+            asm.mov(eax, cr0);
+            asm.and(eax, 0xFFFEFFFF);
+            asm.mov(cr0, eax);
+
             // arguments
             var commandPtr = ebp + 0x8;
             var responseAddress = ebp + 0xC;
-            var pdmcc = ebp + 0x14;
 
             // local variables
             var temp = ebp - 0x4;
@@ -467,7 +461,6 @@ namespace OGXbdmDumper
                 asm.push(eax);
                 asm.call((uint)target.Signatures["sprintf"]);
                 asm.add(esp, 0xC);
-                //asm.mov(__dword_ptr[argNameTerminator], 0);     // ensure it's null-terminated (this shouldn't be required)
 
                 // check if it's included in the command
                 asm.lea(eax, __[temp]);                    // argument value address
@@ -492,14 +485,11 @@ namespace OGXbdmDumper
             asm.call(__dword_ptr[callAddress]);
 
             // print response message
-            asm.push(__dword_ptr[pdmcc]);                   // use pdmcc as connection id TODO: can't remember why this was needed
-            asm.fst(__dword_ptr[temp]);
-            asm.push(__dword_ptr[temp]);                    // floating-point return value
             asm.push(eax);                                  // integer return value
             asm.push(returnFormatAddress);                  // format string address
             asm.push(__dword_ptr[responseAddress]);         // response address
             asm.call((uint)target.Signatures["sprintf"]);
-            asm.add(esp, 0x14);
+            asm.add(esp, 0xC);
 
             // success epilog
             asm.popad();
@@ -511,7 +501,7 @@ namespace OGXbdmDumper
             asm.Label(ref errorLabel);
             asm.popad();
             asm.leave();
-            asm.mov(eax, 0x82DB0000);   // TODO: 0x80004005 ? or have separate error for original vs. custom call routines
+            asm.mov(eax, 0x82DB0000);
             asm.ret(0x10);
 
             // original epilog
@@ -520,9 +510,15 @@ namespace OGXbdmDumper
             asm.leave();
             asm.ret(0x10);
 
+            // inject RPC handler and hook, leaving the rest of the reloc section as scratch space
             int caveSize = asm.Hook(target, target.Signatures["HrFunctionCall"], address);
             address += (uint)caveSize;
             remainder -= caveSize;
+
+            // 16-byte align the scratch base
+            uint padding = ((address + 0xF) & 0xFFFFFFF0) - address;
+            address += padding;
+            remainder -= (int)padding;
 
             return new MemoryRegion(address, (uint)remainder);
 
@@ -620,10 +616,10 @@ namespace OGXbdmDumper
                         new SodmaSignature("WriteSMBusByte")
                         { 
                             // mov     al, 20h
-                            new OdmPattern(0x0, new byte[] { 0xB0, 0x20 }),
+                            new OdmPattern(0x3, new byte[] { 0xB0, 0x20 }),
 
                             // mov     dx, 0C004h
-                            new OdmPattern(0x2, new byte[] { 0x66, 0xBA, 0x04, 0xC0 }),
+                            new OdmPattern(0x5, new byte[] { 0x66, 0xBA, 0x04, 0xC0 }),
                         },
 
                         // universal pattern
