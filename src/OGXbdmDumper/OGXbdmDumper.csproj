@@ -11,6 +11,7 @@
     <PackageReference Include="ConsoleTools" Version="1.1.1" />
     <PackageReference Include="Iced" Version="1.18.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="7.0.0" />
+    <PackageReference Include="PeNet" Version="3.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="4.1.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="ShellProgressBar" Version="5.2.0" />

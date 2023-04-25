@@ -40,6 +40,7 @@ namespace OGXbdmDumper
             {
                 InitializeLogging();
 
+                // obtain a connection
                 using var xbox = GetXboxConnection();
 
                 // create dated folder underneath selection to help prevent accidental overwrites
@@ -85,11 +86,7 @@ namespace OGXbdmDumper
             Log.Information("Version {0}", Assembly.GetExecutingAssembly().GetName().Version);
 
             // provide the option for additional log capture
-            var yesNoQuestion = new YesNoQuestion("Enable verbose file logging?")
-            {
-                DefaultAnswer = YesNoAnswer.No
-            };
-            LogLevel = yesNoQuestion.ReadAnswer() == YesNoAnswer.Yes ? LogEventLevel.Verbose : LogEventLevel.Information;
+            LogLevel = YesNo("Enable verbose file logging?", false) ? LogEventLevel.Verbose : LogEventLevel.Information;
         }
 
         public static Xbox GetXboxConnection()
@@ -158,12 +155,7 @@ namespace OGXbdmDumper
 
         public static void DumpXbdmMemory(Xbox xbox, string path)
         {
-            var yesNoQuestion = new YesNoQuestion("Dump xbdm.dll from memory?")
-            {
-                DefaultAnswer = YesNoAnswer.Yes
-            };
-
-            if (yesNoQuestion.ReadAnswer() == YesNoAnswer.No)
+            if (!YesNo("Dump xbdm.dll from memory?"))
                 return;
 
             Log.Information("Dumping xbdm.dll from memory.");
@@ -177,12 +169,7 @@ namespace OGXbdmDumper
 
         public static void DumpKernelMemory(Xbox xbox, string path)
         {
-            var yesNoQuestion = new YesNoQuestion("Dump xboxkrnl.exe from memory?")
-            {
-                DefaultAnswer = YesNoAnswer.Yes
-            };
-
-            if (yesNoQuestion.ReadAnswer() == YesNoAnswer.No)
+            if (!YesNo("Dump xboxkrnl.exe from memory?"))
                 return;
 
             Log.Information("Dumping xboxkrnl.exe from memory.");
@@ -207,11 +194,9 @@ namespace OGXbdmDumper
             Log.Information("Validating remote procedure call functionality.");
 
             // mov eax, 0DEADBEEFh
-            // fld1
             // ret
-            xbox.WriteMemory(xbox.ScratchBuffer.Address, new byte[] { 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xD9, 0xE8, 0xC3 });
-            var result = xbox.Call(xbox.ScratchBuffer.Address);
-            if (result.Eax != 0xDEADBEEF)   // TODO:  || result.St0 != 1.0f
+            xbox.WriteMemory(xbox.ScratchBuffer.Address, new byte[] { 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xC3 });
+            if (xbox.Call(xbox.ScratchBuffer.Address) != 0xDEADBEEF)
             {
                 Log.Warning("Remote procedure call failure!");
                 throw new InvalidDataException();
@@ -220,27 +205,14 @@ namespace OGXbdmDumper
 
         public static void DumpEeprom(Xbox xbox, string path)
         {
-            var yesNoQuestion = new YesNoQuestion("Dump EEPROM?")
-            {
-                DefaultAnswer = YesNoAnswer.Yes
-            };
-
-            if (yesNoQuestion.ReadAnswer() == YesNoAnswer.No)
+            if (!YesNo("Dump EEPROM?"))
                 return;
 
             Log.Information("Dumping EEPROM.");
 
-            const int eepromSize = 256;
-
             // configure progress bar
-            using var pbar = new ProgressBar(eepromSize, "Complete", 
-                new ProgressBarOptions
-                {
-                    ForegroundColor = ConsoleColor.Yellow,
-                    ForegroundColorDone = ConsoleColor.DarkGreen,
-                    BackgroundColor = ConsoleColor.DarkGray,
-                    BackgroundCharacter = '\u2593'
-                });
+            const int eepromSize = 256;
+            using var progress = CreatePercentProgressBar();
 
             // read a byte at a time
             using var fs = File.Create(path);
@@ -249,18 +221,14 @@ namespace OGXbdmDumper
             {
                 xbox.Kernel.HalReadSMBusValue(0xA8, i, false, xbox.ScratchBuffer.Address);
                 bw.Write(xbox.Memory.ReadByte(xbox.ScratchBuffer.Address));
-                pbar.Tick();
+                progress.AsProgress<float>().Report((float)i / eepromSize);
             }
+            progress.AsProgress<float>().Report(1.0f);
         }
 
         public static void DumpBiosImage(Xbox xbox, string path)
         {
-            var yesNoQuestion = new YesNoQuestion("Dump BIOS?")
-            {
-                DefaultAnswer = YesNoAnswer.Yes
-            };
-
-            if (yesNoQuestion.ReadAnswer() == YesNoAnswer.No)
+            if (!YesNo("Dump BIOS?"))
                 return;
 
             Log.Information("Dumping BIOS image from flash.");
@@ -271,21 +239,15 @@ namespace OGXbdmDumper
             // configure progress bar
             var chunkSize = 0x1000;
             var chunks = bios.Length / chunkSize;
-            using var pbar = new ProgressBar(chunks, "Complete",
-                new ProgressBarOptions
-                {
-                    ForegroundColor = ConsoleColor.Yellow,
-                    ForegroundColorDone = ConsoleColor.DarkGreen,
-                    BackgroundColor = ConsoleColor.DarkGray,
-                    BackgroundCharacter = '\u2593'
-                });
+            using var progress = CreatePercentProgressBar();
 
             // read 4kb at a time
             for (int i = 0; i < chunks; i++)
             {
                 xbox.ReadMemory(0xFF000000 + i * chunkSize, bios, i * chunkSize, chunkSize);
-                pbar.Tick();
+                progress.AsProgress<float>().Report((float)i / chunks);
             }
+            progress.AsProgress<float>().Report(1.0f);
 
             // find smallest 256KB-aligned unique chunk since it gets mirrored throughout the upper 16MB range
             byte[] testPattern = bios.Take(1024 * 256).ToArray();
@@ -298,13 +260,12 @@ namespace OGXbdmDumper
 
         public static void DumpHddImage(Xbox xbox, string path)
         {
-            var yesNoQuestion = new YesNoQuestion("Dump HDD image?")
-            {
-                DefaultAnswer = YesNoAnswer.Yes
-            };
-
-            if (yesNoQuestion.ReadAnswer() == YesNoAnswer.No)
+            if (!YesNo("Dump HDD image?"))
                 return;
+
+            // expand scratch buffer and switch to unsafe mode for increased performance
+            xbox.ExpandScratchBuffer();
+            xbox.SafeMode = false;
 
             Log.Information("Dumping HDD image.");
 
@@ -325,6 +286,7 @@ namespace OGXbdmDumper
             // FileName: + 32
             // db	"\Device\Harddisk0\Partition0", 0
             uint scratch = xbox.ScratchBuffer.Address;
+            uint scratchSize = xbox.ScratchBuffer.Size;
             uint fileHandleAddr = scratch;
             uint iOStatusBlockAddr = scratch + 4;
             uint objectAttributesAddr = scratch + 12;
@@ -333,7 +295,7 @@ namespace OGXbdmDumper
 
             // initialize remote memory
             string name = @"\Device\Harddisk0\Partition0";      // physical disk path
-            xbox.Memory.Position = xbox.ScratchBuffer.Address;
+            xbox.Memory.Position = scratch;
             xbox.Memory.Write((uint)0);
             xbox.Memory.Write((uint)0);
             xbox.Memory.Write((uint)0);
@@ -355,8 +317,8 @@ namespace OGXbdmDumper
                     (uint)3,                // ULONG ShareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE
                     (uint)0x60              // ULONG OpenOptions = FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE
                 );
-            if (status.Eax != 0)
-                throw new Win32Exception((int)status.Eax);
+            if (status != 0)
+                throw new Win32Exception((int)status);
             uint handle = xbox.Memory.ReadUInt32(fileHandleAddr);
 
             // memory map
@@ -376,8 +338,8 @@ namespace OGXbdmDumper
                     geometryInfoAddr,                       // PVOID OutputBuffer
                     geometryInfoSize                        // ULONG OutputBufferLength
                 );
-            if (status.Eax != 0)
-                throw new Win32Exception((int)status.Eax);
+            if (status != 0)
+                throw new Win32Exception((int)status);
 
             // calculate the total raw disk size
             long cylinders = xbox.Memory.ReadInt64(geometryInfoAddr);
@@ -388,9 +350,9 @@ namespace OGXbdmDumper
             Log.Information("Detected {0} GB HDD ({1} bytes).", (int)((float)size / (1024 * 1024 * 1024)), size.ToHexString());
 
             // get the required 4KB-aligned/sized buffer within scratch space
-            uint bufferAddress = xbox.ScratchBuffer.Address + 16; // first 16 bytes of scratch is reserved for NtReadFile args
+            uint bufferAddress = scratch + 16; // first 16 bytes of scratch is reserved for NtReadFile args
             bufferAddress = (bufferAddress + 0xFFF) & 0xFFFFF000; // align up to the next 4KB
-            uint bufferSize = xbox.ScratchBuffer.Address + xbox.ScratchBuffer.Size - bufferAddress;
+            uint bufferSize = scratch + scratchSize - bufferAddress;
             bufferSize &= 0xFFFFF000; // align down to the next 4KB
             byte[] buffer = new byte[bufferSize];
 
@@ -398,15 +360,7 @@ namespace OGXbdmDumper
             if (bufferSize == 0)
                 throw new OutOfMemoryException("Not enough aligned scratch space!");
 
-            using var progress = new ProgressBar(10000, "Completed",
-                new ProgressBarOptions
-                {
-                    ForegroundColor = ConsoleColor.Yellow,
-                    ForegroundColorDone = ConsoleColor.DarkGreen,
-                    BackgroundColor = ConsoleColor.DarkGray,
-                    BackgroundCharacter = '\u2593'
-                });
-
+            using var progress = CreatePercentProgressBar();
             using var fs = File.Create(path);
             using var bw = new BinaryWriter(fs);
 
@@ -419,16 +373,16 @@ namespace OGXbdmDumper
 
                 try
                 {
-                    xbox.Memory.Write(xbox.ScratchBuffer.Address, diskOffset);
+                    xbox.Memory.Write(scratch, diskOffset);
                     xbox.Kernel.NtReadFile(
-                        handle,                             // HANDLE FileHandle
-                        0,                                  // HANDLE Event
-                        0,                                  // PIO_APC_ROUTINE ApcRoutine
-                        0,                                  // PVOID ApcContext
-                        xbox.ScratchBuffer.Address + 8,     // PIO_STATUS_BLOCK IoStatusBlock
-                        bufferAddress,                      // PVOID Buffer
-                        bytesToRead,                        // ULONG Length
-                        xbox.ScratchBuffer.Address          // PLARGE_INTEGER ByteOffset
+                        handle,         // HANDLE FileHandle
+                        0,              // HANDLE Event
+                        0,              // PIO_APC_ROUTINE ApcRoutine
+                        0,              // PVOID ApcContext
+                        scratch + 8,    // PIO_STATUS_BLOCK IoStatusBlock
+                        bufferAddress,  // PVOID Buffer
+                        bytesToRead,    // ULONG Length
+                        scratch         // PLARGE_INTEGER ByteOffset
                     );
 
                     xbox.ReadMemory(bufferAddress, buffer, 0, (int)bytesToRead);
@@ -447,9 +401,32 @@ namespace OGXbdmDumper
 
                 progress.AsProgress<float>().Report((float)diskOffset / size);
             }
+            progress.AsProgress<float>().Report(1.0f);
 
             // cleanup
             xbox.Kernel.NtClose(handle);
+        }
+
+        private static ProgressBar CreatePercentProgressBar()
+        {
+            return new ProgressBar(10000, "Completed",
+                new ProgressBarOptions
+                {
+                    ForegroundColor = ConsoleColor.Yellow,
+                    ForegroundColorDone = ConsoleColor.DarkGreen,
+                    BackgroundColor = ConsoleColor.DarkGray,
+                    BackgroundCharacter = '\u2593'
+                });
+        }
+
+        private static bool YesNo(string question, bool defaultYes = true)
+        {
+            var yesNoQuestion = new YesNoQuestion(question)
+            {
+                DefaultAnswer = defaultYes ? YesNoAnswer.Yes : YesNoAnswer.No
+            };
+
+            return yesNoQuestion.ReadAnswer() == YesNoAnswer.Yes;
         }
     }
 }

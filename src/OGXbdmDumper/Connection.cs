@@ -235,6 +235,14 @@ namespace OGXbdmDumper
         }
 
         /// <summary>
+        /// Clears all existing data from the receive buffer.
+        /// </summary>
+        public void ClearReceiveBuffer()
+        {
+            ClearReceiveBuffer(_client.Available);
+        }
+
+        /// <summary>
         /// Sends a command to the xbox without waiting for a response.
         /// </summary>
         /// <param name="command">Command to be sent</param>

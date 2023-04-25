@@ -18,6 +18,42 @@ namespace OGXbdmDumper
 
         private readonly MemoryCache _cache = new MemoryCache(new MemoryCacheOptions { ExpirationScanFrequency = TimeSpan.FromMinutes(_cacheDuration) });
 
+        private bool? _hasFastGetmem;
+
+        private bool _hasScratchReassigned;
+
+        public bool HasFastGetmem
+        {
+            get
+            {
+                if (_hasFastGetmem == null)
+                {
+                    try
+                    {
+                        long testAddress = 0x10000;
+                        if (IsValidAddress(testAddress))
+                        {
+                            Session.SendCommandStrict("getmem2 addr={0} length=1", testAddress.ToHexString());
+                            Session.ClearReceiveBuffer();
+                            _hasFastGetmem = true;
+                            Log.Information("Fast getmem support detected.");
+                        }                      
+                        else _hasFastGetmem = false;
+                    }
+                    catch
+                    {
+                        _hasFastGetmem = false;
+                    }
+                }
+                return _hasFastGetmem.Value;
+            }
+        }
+
+        /// <summary>
+        /// Determines whether precautions (usually at the expense of performance) should be taken to prevent crashing the xbox.
+        /// </summary>
+        public bool SafeMode { get; set; } = true;
+
         public bool IsConnected => Session.IsConnected;
 
         public int SendTimeout { get => Session.SendTimeout; set => Session.SendTimeout = value; }
@@ -66,7 +102,6 @@ namespace OGXbdmDumper
             Log.Information("Kernel Version {0}", Kernel.Version);
 
             // enable remote code execution and use the remainder reloc section as scratch
-            // TODO: RPC virtual memory allocation for a larger buffer
             ScratchBuffer = PatchXbdm(this);
             Log.Information("Using {0} bytes of scratch space at address {1}.",
                 ScratchBuffer.Size.ToHexString(), ScratchBuffer.Address.ToHexString());
@@ -100,13 +135,20 @@ namespace OGXbdmDumper
 
         public bool IsValidAddress(long address)
         {
-            Session.SendCommandStrict("getmem addr={0} length=1", address.ToHexString());
-            return "??" != Session.ReceiveMultilineResponse()[0];
+            try
+            {
+                Session.SendCommandStrict("getmem addr={0} length=1", address.ToHexString());
+                return "??" != Session.ReceiveMultilineResponse()[0];
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public void ReadMemory(long address, Span<byte> buffer)
         {
-            if (Version.Build >= 5028) // the faster but unsafe binary getmem2 was introduced some time after 4928
+            if (HasFastGetmem && !SafeMode)
             {
                 Session.SendCommandStrict("getmem2 addr={0} length={1}", address.ToHexString(), buffer.Length);
                 Session.Read(buffer);
@@ -319,7 +361,7 @@ namespace OGXbdmDumper
         /// <param name="address">The function address.</param>
         /// <param name="args">The function arguments.</param>
         /// <returns>Returns an object that unboxes eax by default, but allows for reading st0 for floating-point return values.</returns>
-        public CallResult Call(long address, params object[] args)
+        public uint Call(long address, params object[] args)
         {
             // TODO: call context (~4039+ which requires qwordparam)
 
@@ -334,7 +376,7 @@ namespace OGXbdmDumper
             }
 
             var returnValues = Connection.ParseKvpResponse(Session.SendCommandStrict(command.ToString()).Message);
-            return new CallResult((uint)returnValues["eax"]);
+            return (uint)returnValues["eax"];
         }
 
         /// <summary>
@@ -525,6 +567,18 @@ namespace OGXbdmDumper
             #endregion
         }
 
+        public void ExpandScratchBuffer()
+        {
+            if (!_hasScratchReassigned)
+            {
+                uint scratchSize = 1024 * 1024;
+                Log.Information("Expanding scratch buffer to {0} bytes.", scratchSize);
+                uint scratch = (uint)Kernel.MmAllocateContiguousMemory((int)scratchSize);
+                ScratchBuffer = new MemoryRegion(scratch, scratchSize);
+                _hasScratchReassigned = true;
+            }
+        }
+
         public string GetDisassembly(long address, int length, bool tabPrefix = true, bool showBytes = false)
         {
             // read code from xbox memory
@@ -567,7 +621,7 @@ namespace OGXbdmDumper
 
                 // output address
                 disassembly.Append(instr.IP.ToString("X8"));
-                disassembly.Append(" ");
+                disassembly.Append(' ');
 
                 // optionally output instruction bytes
                 if (showBytes)
@@ -577,7 +631,7 @@ namespace OGXbdmDumper
                     int missingBytes = 10 - instr.Length;
                     for (int i = 0; i < missingBytes; i++)
                         disassembly.Append("  ");
-                    disassembly.Append(" ");
+                    disassembly.Append(' ');
                 }
 
                 // output the decoded instruction
@@ -635,16 +689,6 @@ namespace OGXbdmDumper
                             new OdmPattern(0x33, new byte[] { 0x89, 0x01 })
                         },
 
-                        //// ~4039+
-                        //new SodmaSignature("FGetQwordParam")
-                        //{ 
-                        //    // mov      eax, 30303030h
-                        //    new OdmPattern(0x9C, new byte[] { 0xB8, 0x30, 0x30, 0x30, 0x30 }),
-
-                        //    // retn     0Ch
-                        //    new OdmPattern(0xDA, new byte[] { 0xC2, 0x0C, 0x00 })
-                        //},
-
                         // universal pattern
                         new SodmaSignature("DmSetupFunctionCall")
                         {
@@ -683,37 +727,7 @@ namespace OGXbdmDumper
                     
                             // mov      [ebp+var_1C], 7FFFFFFFh
                             new OdmPattern(0x16, new byte[] { 0xC7, 0x45, 0xE4, 0xFF, 0xFF, 0xFF, 0x7F })
-                        },
-
-                        //new SodmaSignature("HrReceiveFile")
-                        //{
-                        //    // sub     esp, 15Ch
-                        //    new OdmPattern(0x3, new byte[] { 0x81, 0xEC, 0x5C, 0x01, 0x00, 0x00 }),
-   
-                        //    // retn    10h
-                        //    new OdmPattern(0x12F, new byte[] { 0xC2, 0x10, 0x00 })
-                        //},
-
-                        //// not in early versions
-                        //new SodmaSignature("HrReceiveFileData")
-                        //{
-                        //    // cmp     eax, ebx
-                        //    new OdmPattern(0x13, new byte[] { 0x3B, 0xC3 }),
-
-                        //    // cmp     dword ptr [esi+8], 4000h
-                        //    new OdmPattern(0x5B, new byte[] { 0x81, 0x7E, 0x08, 0x00, 0x40, 0x00, 0x00 })
-
-                        //},
-           
-                        //// ~4531+
-                        //new SodmaSignature("HrReceivePartialFile")
-                        //{
-                        //    // push    0C0100000h
-                        //    new OdmPattern(0xA5, new byte[] { 0x68, 0x00, 0x00, 0x10, 0xC0 }),
-   
-                        //    // retn    10h
-                        //    new OdmPattern(0x133, new byte[] { 0xC2, 0x10, 0x00 })
-                        //}
+                        }
                     };
 
                     // read xbdm .text section
@@ -746,6 +760,10 @@ namespace OGXbdmDumper
                 }
 
                 // TODO: free unmanaged resources (unmanaged objects) and override finalizer
+                if (_hasScratchReassigned)
+                {
+                    Kernel.MmFreeContiguousMemory(ScratchBuffer.Address);
+                }
                 Session?.Dispose();
 
                 // TODO: set large fields to null
