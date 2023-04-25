@@ -392,18 +392,18 @@ namespace OGXbdmDumper
             // int 3
             var spinBytes = new byte[] { 0xEB, 0xFE, 0xCC };
 
-            // prevent crashdumps from being written to the hard drive by making it spin instead
-            Log.Information("Disabling crashdump functionality.");
+            // prevent crashdumps from being written to the hard drive by making it spin instead (only for xbdm versions ~4831+)
             if (target.Signatures.ContainsKey("ReadWriteOneSector"))
             {
+                Log.Information("Disabling crashdump functionality.");
                 target.WriteMemory(target.Signatures["ReadWriteOneSector"] + 9, spinBytes);
             }
             else if (target.Signatures.ContainsKey("WriteSMBusByte"))
             {
                 // this will prevent the LED state from changing upon crash
+                Log.Information("Disabling crashdump functionality.");
                 target.WriteMemory(target.Signatures["WriteSMBusByte"] + 9, spinBytes);
             }
-            else throw new Exception("Failed to disable crashdump!");
 
             Log.Information("Patching xbdm memory to enable remote code execution.");
 
