@@ -748,6 +748,43 @@ namespace OGXbdmDumper
 
         #endregion
 
+        #region File
+
+        public char[] GetDrives()
+        {
+            return Session.SendCommandStrict("drivelist").Message.ToCharArray();
+        }
+
+        public List<XboxFileInformation> GetDirectoryList(string path)
+        {
+            var list = new List<XboxFileInformation>();
+            Session.SendCommandStrict("dirlist name=\"{0}\"", path);
+            foreach (string file in Session.ReceiveMultilineResponse())
+            {
+                var fileInfo = file.ParseXboxResponseLine();
+                var info = new XboxFileInformation();
+                info.FullName = Path.Combine(path, (string)fileInfo["name"]);
+                info.Size = ((long)fileInfo["sizehi"] << 32) | (long)fileInfo["sizelo"];
+                info.CreationTime = DateTime.FromFileTimeUtc(((long)fileInfo["createhi"] << 32) | (long)fileInfo["createlo"]);
+                info.ChangeTime = DateTime.FromFileTimeUtc(((long)fileInfo["changehi"] << 32) | (long)fileInfo["changelo"]);
+                info.Attributes |= file.Contains("directory") ? FileAttributes.Directory : FileAttributes.Normal;
+                info.Attributes |= file.Contains("readonly") ? FileAttributes.ReadOnly : 0;
+                info.Attributes |= file.Contains("hidden") ? FileAttributes.Hidden : 0;
+                list.Add(info);
+            }
+
+            return list; 
+        }
+
+        public void GetFile(string localPath, string remotePath)
+        {
+            Session.SendCommandStrict("getfile name=\"{0}\"", remotePath);
+            using var lfs = File.Create(localPath);
+            Session.CopyToCount(lfs, Session.Reader.ReadInt32());
+        }
+
+        #endregion
+
         #region IDisposable
 
         protected virtual void Dispose(bool disposing)

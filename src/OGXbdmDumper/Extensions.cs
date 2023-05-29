@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace OGXbdmDumper
 {
@@ -18,6 +19,50 @@ namespace OGXbdmDumper
         {
             return new Version(version & 0xFF, (version >> 8) & 0xFF,
                 (version >> 16) & 0xFF, version >> 24);
+        }
+
+        #endregion
+
+        #region String
+
+        /// <summary>
+        /// Extracts name/value pairs from an Xbox response line.
+        /// </summary>
+        /// <param name="line"></param>
+        /// <returns></returns>
+        public static Dictionary<string, object> ParseXboxResponseLine(this string line)
+        {
+            Dictionary<string, object> values = new Dictionary<string, object>();
+            var items = Regex.Matches(line, @"(\S+)\s*=\s*(""(?:[^""]|"""")*""|\S+)");
+
+            foreach (Match item in items)
+            {
+                string name = item.Groups[1].Value;
+                string value = item.Groups[2].Value;
+
+                long longValue;
+                if (value.StartsWith("\""))
+                {
+                    // string
+                    values[name] = value.Trim('"');
+                }
+                else if (value.StartsWith("0x"))
+                {
+                    // hexidecimal integer
+                    values[name] = Convert.ToInt64(value, 16);
+                }
+                else if (long.TryParse(value, out longValue))
+                {
+                    // decimal integer
+                    values[name] = longValue;
+                }
+                else
+                {
+                    throw new InvalidCastException("Unknown data type");
+                }
+            }
+
+            return values;
         }
 
         #endregion

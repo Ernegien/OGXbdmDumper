@@ -57,6 +57,7 @@ namespace OGXbdmDumper
                 ValidateRpc(xbox);
                 DumpEeprom(xbox, Path.Combine(path, "eeprom.bin"));
                 DumpHddImage(xbox, Path.Combine(path, "hdd.img"));
+                DumpHddFiles(xbox, Path.Combine(path, "hdd"));
 
                 // resume execution
                 xbox.Go();
@@ -405,6 +406,54 @@ namespace OGXbdmDumper
 
             // cleanup
             xbox.Kernel.NtClose(handle);
+        }
+
+        private static void DumpDirectory(Xbox xbox, string remotePath, string localPath)
+        {
+            Log.Information("Downloading {0}", remotePath);
+            Directory.CreateDirectory(localPath);
+
+            try
+            {
+                var list = xbox.GetDirectoryList(remotePath);
+
+                foreach (var item in list)
+                {
+                    if (item.Attributes.HasFlag(FileAttributes.Directory))
+                    {
+                        DumpDirectory(xbox, item.FullName, Path.Combine(localPath, item.Name));
+                    }
+                    else
+                    {
+                        try
+                        {
+                            Log.Information("Downloading file {0}", item.Name);
+                            xbox.GetFile(Path.Combine(localPath, item.Name), item.FullName);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning(ex, item.Name);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, remotePath);
+            }
+        }
+
+        public static void DumpHddFiles(Xbox xbox, string path)
+        {
+            if (!YesNo("Dump files from HDD?"))
+                return;
+
+            Log.Information("Dumping files from hdd.");
+
+            foreach (var drive in xbox.GetDrives())
+            {
+                DumpDirectory(xbox, drive.ToString() + ":\\", Path.Combine(path, drive.ToString()));
+            }
         }
 
         private static ProgressBar CreatePercentProgressBar()
