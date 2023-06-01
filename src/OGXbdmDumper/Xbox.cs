@@ -690,6 +690,19 @@ namespace OGXbdmDumper
                         },
 
                         // universal pattern
+                        new SodmaSignature("FGetNamedDwParam")
+                        {
+                            // mov     ebp, esp
+                            new OdmPattern(0x1, new byte[] { 0x8B, 0xEC }),
+
+                            // jnz     short 0x17
+                            new OdmPattern(0x13, new byte[] { 0x75, 0x17 }),
+
+                            // retn    10h
+                            new OdmPattern(0x30, new byte[] { 0xC2, 0x10, 0x00 })
+                        },
+
+                        // universal pattern
                         new SodmaSignature("DmSetupFunctionCall")
                         {
                             // test     ax, 280h
@@ -727,6 +740,36 @@ namespace OGXbdmDumper
                     
                             // mov      [ebp+var_1C], 7FFFFFFFh
                             new OdmPattern(0x16, new byte[] { 0xC7, 0x45, 0xE4, 0xFF, 0xFF, 0xFF, 0x7F })
+                        },
+
+                        // early revisions
+                        new SodmaSignature("DMAllocatePool")
+                        {
+                            // push    ebp
+                            new OdmPattern(0x0, new byte[] { 0x55 }),
+
+                            // mov     ebp, esp
+                            new OdmPattern(0x0, new byte[] { 0x8B, 0xEC }),
+
+                            // push    'enoN'
+                            new OdmPattern(0x3, new byte[] { 0x68, 0x4E, 0x6F, 0x6E, 0x65 })
+                        },
+
+                        // later revisions
+                        new SodmaSignature("DMAllocatePool")
+                        {
+                            // push    'enoN'
+                            new OdmPattern(0x0, new byte[] { 0x68, 0x4E, 0x6F, 0x6E, 0x65 }),
+
+                            // retn    4
+                            new OdmPattern(0xE, new byte[] { 0xC2, 0x04, 0x00 })
+                        },
+
+                        // universal pattern
+                        new SodmaSignature("DMFreePool")
+                        {
+                            // cmp     eax, 0B0000000h
+                            new OdmPattern(0xF, new byte[] { 0x3D, 0x00, 0x00, 0x00, 0xB0 })
                         }
                     };
 

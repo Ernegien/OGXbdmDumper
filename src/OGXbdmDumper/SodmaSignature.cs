@@ -195,7 +195,7 @@ namespace OGXbdmDumper
                         matches[sig] = -1;
                         Log.Error("Duplicate match for {0} signature at address {1}.", sig.Name, (baseAddress + i).ToHexString(8));
                     }
-                    else Log.Information("Match for {0} signature at address {1}.", sig.Name, (baseAddress + i).ToHexString(8));
+                    else Log.Debug("Match for {0} signature at address {1}.", sig.Name, (baseAddress + i).ToHexString(8));
 
                     nomatch:;
                 }
@@ -232,6 +232,7 @@ namespace OGXbdmDumper
             var result = new Dictionary<string, long>();
             foreach (var unique in resolved)
             {
+                Log.Information("Resolved {0} to address {1}.", unique.Value.Name, matches[unique.Value].ToHexString(8));
                 result.Add(unique.Key, matches[unique.Value]);
             }
 
