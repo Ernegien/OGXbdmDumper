@@ -148,35 +148,35 @@ namespace OGXbdmDumper
         #region Assembler
 
         /// <summary>
+        /// Assembles the instructions.
+        /// </summary>
+        /// <param name="asm"></param>
+        /// <param name="baseAddress"></param>
+        /// <returns>Returns the assembled bytes.</returns>
+        public static byte[] AssembleBytes(this Assembler asm, uint baseAddress)
+        {
+            using var ms = new MemoryStream();
+            asm.Assemble(new StreamCodeWriter(ms), baseAddress);
+            return ms.ToArray();
+        }
+
+        /// <summary>
         /// Hooks the specified Xbox target address redirecting to the specified cave address.
         /// Caller must recreate any instructions clobbered by the hook in the cave.
         /// The hook is 6 bytes long consisting of a push followed by a ret.
         /// </summary>
         /// <param name="asm">The assembler.</param>
         /// <param name="target">The xbox target.</param>
-        /// <param name="address">The hook address.</param>
-        /// <param name="cave">The cave address.</param>
-        /// <returns>The assembled cave size.</returns>
-        public static int Hook(this Assembler asm, Xbox target, long address, long cave)
+        /// <param name="hookAddress">The hook address.</param>
+        /// <param name="caveAddress">The cave address.</param>
+        public static void Hook(this Assembler asm, Xbox target, long hookAaddress, long caveAddress)
         {
-            // buffer to a memorystream first since it operates on one byte at a time
-            using var ms = new MemoryStream();
-            asm.Assemble(new StreamCodeWriter(ms), (ulong)cave);
-
-            // copy the assembled instructions into the cave
-            target.Memory.Position = cave;
-            ms.Position = 0;
-            ms.CopyTo(target.Memory);
-
             // store the pushret hook to the cave
             // TODO: combine writes!
-            target.Memory.Position = address;
+            target.Memory.Position = hookAaddress;
             target.Memory.Write((byte)0x68);    // push
-            target.Memory.Write((uint)cave);    // cave address
+            target.Memory.Write(caveAddress);   // cave address
             target.Memory.Write((byte)0xC3);    // ret
-
-            // return the cave size
-            return (int)ms.Length;
         }
 
         #endregion
@@ -206,6 +206,75 @@ namespace OGXbdmDumper
             }
         }
 
+        /// <summary>
+        /// Writes a value to a stream.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="stream"></param>
+        /// <param name="value"></param>
+        /// <returns>Returns the number of bytes written.</returns>
+        public static int Write<T>(this Stream stream, T value)
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+
+            long origStreamPosition = stream.Position;
+            using var writer = new BinaryWriter(stream);
+
+            switch (Type.GetTypeCode(typeof(T)))
+            {
+                case TypeCode.Boolean:
+                    writer.Write((bool)(object)value);
+                    break;
+                case TypeCode.Char:
+                    writer.Write((char)(object)value);
+                    break;
+                case TypeCode.SByte:
+                    writer.Write((sbyte)(object)value);
+                    break;
+                case TypeCode.Byte:
+                    writer.Write((byte)(object)value);
+                    break;
+                case TypeCode.Int16:
+                    writer.Write((short)(object)value);
+                    break;
+                case TypeCode.UInt16:
+                    writer.Write((ushort)(object)value);
+                    break;
+                case TypeCode.Int32:
+                    writer.Write((int)(object)value);
+                    break;
+                case TypeCode.UInt32:
+                    writer.Write((uint)(object)value);
+                    break;
+                case TypeCode.Int64:
+                    writer.Write((long)(object)value);
+                    break;
+                case TypeCode.UInt64:
+                    writer.Write((ulong)(object)value);
+                    break;
+                case TypeCode.Single:
+                    writer.Write((float)(object)value);
+                    break;
+                case TypeCode.Double:
+                    writer.Write((double)(object)value);
+                    break;
+                case TypeCode.String:
+                    writer.Write(Encoding.ASCII.GetBytes((string)(object)value));
+                    break;
+                default:
+
+                    if (value is byte[])
+                    {
+                        writer.Write(value as byte[]);
+                        break;
+                    }
+
+                    throw new InvalidCastException();
+            }
+
+            return (int)(stream.Position - origStreamPosition);
+        }
+
         #endregion
 
         #region Hex Conversion
@@ -217,6 +286,18 @@ namespace OGXbdmDumper
         /// <param name="padWidth"></param>
         /// <returns></returns>
         public static string ToHexString(this uint value, int padWidth = 0)
+        {
+            // TODO: cleanup
+            return "0x" + value.ToString("X" + (padWidth > 0 ? padWidth.ToString() : string.Empty));
+        }
+
+        /// <summary>
+        /// TODO: description
+        /// </summary>
+        /// <param name="value"></param>
+        /// <param name="padWidth"></param>
+        /// <returns></returns>
+        public static string ToHexString(this int value, int padWidth = 0)
         {
             // TODO: cleanup
             return "0x" + value.ToString("X" + (padWidth > 0 ? padWidth.ToString() : string.Empty));

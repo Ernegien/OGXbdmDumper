@@ -20,7 +20,7 @@ namespace OGXbdmDumper
 
         private bool? _hasFastGetmem;
 
-        private bool _hasScratchReassigned;
+        public ScratchBuffer StaticScratch;
 
         public bool HasFastGetmem
         {
@@ -77,8 +77,6 @@ namespace OGXbdmDumper
 
         public Version Version => GetVersion();
 
-        public MemoryRegion ScratchBuffer { get; private set; }
-
         #endregion
 
         #region Connection
@@ -91,6 +89,7 @@ namespace OGXbdmDumper
             // init subsystems
             Memory = new XboxMemoryStream(this);
             Kernel = new Kernel(this);
+            StaticScratch = new ScratchBuffer(this);
 
             Log.Information("Loaded Modules:");
             foreach (var module in Modules)
@@ -102,9 +101,7 @@ namespace OGXbdmDumper
             Log.Information("Kernel Version {0}", Kernel.Version);
 
             // enable remote code execution and use the remainder reloc section as scratch
-            ScratchBuffer = PatchXbdm(this);
-            Log.Information("Using {0} bytes of scratch space at address {1}.",
-                ScratchBuffer.Size.ToHexString(), ScratchBuffer.Address.ToHexString());
+            PatchXbdm(this);
         }
 
         public void Disconnect()
@@ -152,6 +149,16 @@ namespace OGXbdmDumper
             {
                 Session.SendCommandStrict("getmem2 addr={0} length={1}", address.ToHexString(), buffer.Length);
                 Session.Read(buffer);
+                if (Log.IsEnabled(LogEventLevel.Verbose))
+                {
+                    Log.Verbose(buffer.ToHexString());
+                }
+            }
+            else if (!SafeMode)
+            {
+                // custom getmem2
+                Session.SendCommandStrict("funccall type=1 addr={0} length={1}", address, buffer.Length);
+                Session.ReadExactly(buffer);
                 if (Log.IsEnabled(LogEventLevel.Verbose))
                 {
                     Log.Verbose(buffer.ToHexString());
@@ -369,7 +376,7 @@ namespace OGXbdmDumper
             var reversedArgs = args.Reverse().ToArray();
 
             StringBuilder command = new StringBuilder();
-            command.AppendFormat("funccall addr={0} ", address);
+            command.AppendFormat("funccall type=0 addr={0} ", address);
             for (int i = 0; i < reversedArgs.Length; i++)
             {
                 command.AppendFormat("arg{0}={1} ", i, Convert.ToUInt32(reversedArgs[i]));
@@ -384,7 +391,7 @@ namespace OGXbdmDumper
         /// Prevents crashdumps from being written to the HDD and enables remote code execution.
         /// </summary>
         /// <param name="target"></param>
-        private MemoryRegion PatchXbdm(Xbox target)
+        private void PatchXbdm(Xbox target)
         {
             // the spin routine to be patched in after the signature patterns
             // spin:
@@ -407,43 +414,88 @@ namespace OGXbdmDumper
 
             Log.Information("Patching xbdm memory to enable remote code execution.");
 
-            // store patches in the reloc section
-            var relocInfo = target.GetModules().FirstOrDefault(m => m.Name.Equals("xbdm.dll")).GetSection(".reloc");
+            uint argThreadStringAddress = StaticScratch.Alloc("thread\0");
+            uint argTypeStringAddress = StaticScratch.Alloc("type\0");
+            uint argAddrStringAddress = StaticScratch.Alloc("addr\0");
+            uint argLengthStringAddress = StaticScratch.Alloc("length\0");
+            uint argFormatStringAddress = StaticScratch.Alloc("arg%01d\0");
+            uint returnFormatAddress = StaticScratch.Alloc("eax=0x%X\0");
 
-            // maintain next usable patch address and remaining size
-            uint address = (uint)relocInfo.Base;
-            int remainder = relocInfo.Size;
-
-            #region HrFunctionCall Hook
-
-            // 3424+ as it depends on sprintf within xbdm, earlier versions can possibly call against the kernel but their exports are different
             var asm = new Assembler(32);
 
-            // data relative to function start
-            var dataEndLabel = asm.CreateLabel();
-            asm.jmp(dataEndLabel);  // short jump size of 2 bytes
+            #region HrSendGetMemory2Data
 
-            uint argThreadStringAddress = address + 2;
-            var threadBytes = Encoding.ASCII.GetBytes("thread\0");
-            asm.db(threadBytes);
+            uint getmem2CallbackAddress = 0;
+            if (!HasFastGetmem)
+            {
+                // labels
+                var label1 = asm.CreateLabel();
+                var label2 = asm.CreateLabel();
+                var label3 = asm.CreateLabel();
 
-            uint argAddrStringAddress = argThreadStringAddress + (uint)threadBytes.Length;
-            var addrBytes = Encoding.ASCII.GetBytes("addr\0");
-            asm.db(addrBytes);
+                asm.push(ebx);
+                asm.mov(ebx, __dword_ptr[esp + 8]);     // pdmcc
+                asm.mov(eax, __dword_ptr[ebx + 0x14]);  // size
+                asm.test(eax, eax);
+                asm.mov(edx, __dword_ptr[ebx + 0x10]);
+                asm.ja(label1);
+                //asm.push(__dword_ptr[ebx + 8]);
+                //asm.call((uint)target.Signatures["DmFreePool"]);
+                //asm.and(__dword_ptr[ebx + 8], 0);
+                asm.mov(eax, 0x82DB0104);
+                asm.jmp(label3);
 
-            uint argFormatStringAddress = argAddrStringAddress + (uint)addrBytes.Length;
-            var argFormatBytes = Encoding.ASCII.GetBytes("arg%01d\0");
-            asm.db(argFormatBytes);
+                asm.Label(ref label1);
+                asm.mov(ecx, __dword_ptr[ebx + 0xC]);   // buffer size
+                asm.cmp(eax, ecx);
+                asm.jb(label2);
+                asm.mov(eax, ecx);
 
-            uint returnFormatAddress = argFormatStringAddress + (uint)argFormatBytes.Length;
-            var returnFormatBytes = Encoding.ASCII.GetBytes("eax=0x%X\0");
-            asm.db(returnFormatBytes);
-            asm.Label(ref dataEndLabel);
+                asm.Label(ref label2);
+                asm.push(ebp);
+                asm.push(esi);
+                asm.mov(esi, __dword_ptr[edx + 0x14]);  // address
+                asm.push(edi);
+                asm.mov(edi, __dword_ptr[ebx + 8]);
+                asm.mov(ecx, eax);
+                asm.mov(ebp, ecx);
+                asm.shr(ecx, 2);
+                asm.rep.movsd();
+                asm.mov(ecx, ebp);
+                asm.and(ecx, 3);
+                asm.rep.movsb();
+                asm.sub(__dword_ptr[ebx + 0x14], eax);
+                asm.pop(edi);
+                asm.mov(__dword_ptr[ebx + 4], eax);
+                asm.add(__dword_ptr[edx + 0x14], eax);
+                asm.pop(esi);
+                asm.mov(eax, 0x2DB0000);
+                asm.pop(ebp);
+
+                asm.Label(ref label3);
+                asm.pop(ebx);
+                asm.ret(0xC);
+
+                getmem2CallbackAddress = StaticScratch.Alloc(asm.AssembleBytes(StaticScratch.Region.Address));
+            }
+
+            #endregion
+
+            #region HrFunctionCall
+
+            // 3424+ as it depends on sprintf within xbdm, earlier versions can possibly call against the kernel but their exports are different
+            asm = new Assembler(32);
+
+            // labels
+            var binaryResponseLabel = asm.CreateLabel();
+            var getmem2Label = asm.CreateLabel();
+            var errorLabel = asm.CreateLabel();
+            var successLabel = asm.CreateLabel();
 
             // prolog
             asm.push(ebp);
             asm.mov(ebp, esp);
-            asm.sub(esp, 0x10); // carve out space for local temp variables
+            asm.sub(esp, 0x10); // carve out arbitrary space for local temp variables
             asm.pushad();
 
             // disable write protection globally, otherwise checked kernel calls may fail when writing to the default scratch space
@@ -454,11 +506,11 @@ namespace OGXbdmDumper
             // arguments
             var commandPtr = ebp + 0x8;
             var responseAddress = ebp + 0xC;
+            var pdmcc = ebp + 0x14;
 
             // local variables
             var temp = ebp - 0x4;
             var callAddress = ebp - 0x8;
-            var argNameTerminator = ebp - 0xC;
             var argName = ebp - 0x10;
 
             // check for thread id
@@ -468,8 +520,8 @@ namespace OGXbdmDumper
             asm.push(__dword_ptr[commandPtr]);
             asm.call((uint)target.Signatures["FGetDwParam"]);
             asm.test(eax, eax);
-            var immediateCallLabel = asm.CreateLabel();
-            asm.je(immediateCallLabel);
+            var customCommandLabel = asm.CreateLabel();
+            asm.je(customCommandLabel);
 
             // call original code if thread id exists
             asm.push(__dword_ptr[temp]);
@@ -477,8 +529,22 @@ namespace OGXbdmDumper
             var doneLabel = asm.CreateLabel();
             asm.jmp(doneLabel);
 
-            // thread argument doesn't exist, must be an immediate call instead
-            asm.Label(ref immediateCallLabel);
+            // thread argument doesn't exist, must be a custom command
+            asm.Label(ref customCommandLabel);
+
+            // determine custom function type
+            asm.lea(eax, temp);
+            asm.push(eax);
+            asm.push(argTypeStringAddress);    // 'type', 0
+            asm.push(__dword_ptr[commandPtr]);
+            asm.call((uint)target.Signatures["FGetDwParam"]);
+            asm.test(eax, eax);
+            asm.je(errorLabel);
+
+            #region Custom Call (type 0)
+
+            asm.cmp(__dword_ptr[temp], 0);
+            asm.jne(getmem2Label);
 
             // get the call address
             asm.lea(eax, __dword_ptr[callAddress]);
@@ -487,7 +553,7 @@ namespace OGXbdmDumper
             asm.push(__dword_ptr[commandPtr]);
             asm.call((uint)target.Signatures["FGetDwParam"]);
             asm.test(eax, eax);
-            var errorLabel = asm.CreateLabel();
+
             asm.je(errorLabel);
 
             // push arguments (leave it up to caller to reverse argument order and supply the correct amount)
@@ -532,14 +598,79 @@ namespace OGXbdmDumper
             asm.push(__dword_ptr[responseAddress]);         // response address
             asm.call((uint)target.Signatures["sprintf"]);
             asm.add(esp, 0xC);
+            asm.jmp(successLabel);
 
-            // success epilog
+            #endregion
+
+            #region Fast Getmem (type 1)
+
+            asm.Label(ref getmem2Label);
+            asm.cmp(__dword_ptr[temp], 1);
+            asm.jne(errorLabel);
+ 
+            if (!HasFastGetmem)
+            {
+                // TODO: figure out why DmAllocatePool crashes, for now, allocate static scratch space (prevents multi-session!)
+                StaticScratch.Align16();
+                uint getmem2BufferSize = 512;
+                uint getmem2buffer = StaticScratch.Alloc(new byte[getmem2BufferSize]);
+
+                // get length and size args
+                asm.mov(esi, __dword_ptr[pdmcc]);
+                asm.push(__dword_ptr[responseAddress]);
+                asm.mov(edi, __dword_ptr[esi + 0x10]);
+                asm.lea(eax, __dword_ptr[pdmcc]);
+                asm.push(eax);
+                asm.push(argAddrStringAddress);
+                asm.push(__dword_ptr[commandPtr]);
+                asm.call((uint)target.Signatures["FGetNamedDwParam"]);
+                asm.test(eax, eax);
+                asm.jz(errorLabel);
+                asm.push(__dword_ptr[responseAddress]);
+                asm.lea(eax, __dword_ptr[responseAddress]);
+                asm.push(eax);
+                asm.push(argLengthStringAddress);
+                asm.push(__dword_ptr[commandPtr]);
+                asm.call((uint)target.Signatures["FGetNamedDwParam"]);
+                asm.test(eax, eax);
+                asm.jz(errorLabel);
+
+                asm.mov(eax, __dword_ptr[pdmcc]);   // address
+                asm.and(__dword_ptr[edi + 0x10], 0);
+                asm.mov(__dword_ptr[edi + 0x14], eax);
+                //asm.mov(eax, 0x2000);   // TODO: increase pool size?
+                //asm.push(eax);
+                //asm.call((uint)target.Signatures["DmAllocatePool"]);    // TODO: crashes in here, possible IRQ issues?
+                asm.mov(__dword_ptr[esi + 0xC], getmem2BufferSize);   // buffer size
+                asm.mov(__dword_ptr[esi + 8], getmem2buffer); // buffer address
+                asm.mov(eax, __dword_ptr[responseAddress]);
+                asm.mov(__dword_ptr[esi + 0x14], eax);
+                asm.mov(__dword_ptr[esi], getmem2CallbackAddress);
+                asm.jmp(binaryResponseLabel);
+            }
+
+            #endregion
+
+            #region Return Codes
+
+            // if we're here, must be an unknown custom type
+            asm.jmp(errorLabel);
+
+            // generic success epilog
+            asm.Label(ref successLabel);
             asm.popad();
             asm.leave();
             asm.mov(eax, 0x2DB0000);
             asm.ret(0x10);
 
-            // failure epilog
+            // successful binary response follows epilog
+            asm.Label(ref binaryResponseLabel);
+            asm.popad();
+            asm.leave();
+            asm.mov(eax, 0x2DB0003);
+            asm.ret(0x10);
+
+            // generic failure epilog
             asm.Label(ref errorLabel);
             asm.popad();
             asm.leave();
@@ -552,31 +683,14 @@ namespace OGXbdmDumper
             asm.leave();
             asm.ret(0x10);
 
-            // inject RPC handler and hook, leaving the rest of the reloc section as scratch space
-            int caveSize = asm.Hook(target, target.Signatures["HrFunctionCall"], address);
-            address += (uint)caveSize;
-            remainder -= caveSize;
-
-            // 16-byte align the scratch base
-            uint padding = ((address + 0xF) & 0xFFFFFFF0) - address;
-            address += padding;
-            remainder -= (int)padding;
-
-            return new MemoryRegion(address, (uint)remainder);
-
             #endregion
-        }
 
-        public void ExpandScratchBuffer()
-        {
-            if (!_hasScratchReassigned)
-            {
-                uint scratchSize = 1024 * 1024;
-                Log.Information("Expanding scratch buffer to {0} bytes.", scratchSize);
-                uint scratch = (uint)Kernel.MmAllocateContiguousMemory((int)scratchSize);
-                ScratchBuffer = new MemoryRegion(scratch, scratchSize);
-                _hasScratchReassigned = true;
-            }
+            // inject RPC handler and hook
+            uint caveAddress = StaticScratch.Alloc(asm.AssembleBytes(StaticScratch.Region.Address));
+            Log.Information("HrFuncCall address {0}", caveAddress.ToHexString());
+            asm.Hook(target, target.Signatures["HrFunctionCall"], caveAddress);
+            
+            #endregion
         }
 
         public string GetDisassembly(long address, int length, bool tabPrefix = true, bool showBytes = false)
@@ -743,7 +857,7 @@ namespace OGXbdmDumper
                         },
 
                         // early revisions
-                        new SodmaSignature("DMAllocatePool")
+                        new SodmaSignature("DmAllocatePool")
                         {
                             // push    ebp
                             new OdmPattern(0x0, new byte[] { 0x55 }),
@@ -756,7 +870,7 @@ namespace OGXbdmDumper
                         },
 
                         // later revisions
-                        new SodmaSignature("DMAllocatePool")
+                        new SodmaSignature("DmAllocatePool")
                         {
                             // push    'enoN'
                             new OdmPattern(0x0, new byte[] { 0x68, 0x4E, 0x6F, 0x6E, 0x65 }),
@@ -766,7 +880,7 @@ namespace OGXbdmDumper
                         },
 
                         // universal pattern
-                        new SodmaSignature("DMFreePool")
+                        new SodmaSignature("DmFreePool")
                         {
                             // cmp     eax, 0B0000000h
                             new OdmPattern(0xF, new byte[] { 0x3D, 0x00, 0x00, 0x00, 0xB0 })
@@ -840,10 +954,6 @@ namespace OGXbdmDumper
                 }
 
                 // TODO: free unmanaged resources (unmanaged objects) and override finalizer
-                if (_hasScratchReassigned)
-                {
-                    Kernel.MmFreeContiguousMemory(ScratchBuffer.Address);
-                }
                 Session?.Dispose();
 
                 // TODO: set large fields to null

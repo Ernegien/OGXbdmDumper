@@ -3,9 +3,9 @@
     public class MemoryRegion
     {
         public uint Address { get; }
-        public uint Size { get; }
+        public int Size { get; }
 
-        public MemoryRegion(uint address, uint size)
+        public MemoryRegion(uint address, int size)
         { 
             Address = address;
             Size = size;

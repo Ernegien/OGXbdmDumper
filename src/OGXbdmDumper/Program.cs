@@ -8,6 +8,7 @@ using System.Net;
 using System.Reflection;
 using DustInTheWind.ConsoleTools.Controls.Menus;
 using DustInTheWind.ConsoleTools.Controls.InputControls;
+using System;
 
 namespace OGXbdmDumper
 {
@@ -196,8 +197,8 @@ namespace OGXbdmDumper
 
             // mov eax, 0DEADBEEFh
             // ret
-            xbox.WriteMemory(xbox.ScratchBuffer.Address, new byte[] { 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xC3 });
-            if (xbox.Call(xbox.ScratchBuffer.Address) != 0xDEADBEEF)
+            xbox.WriteMemory(xbox.StaticScratch.Region.Address, new byte[] { 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xC3 });
+            if (xbox.Call(xbox.StaticScratch.Region.Address) != 0xDEADBEEF)
             {
                 Log.Warning("Remote procedure call failure!");
                 throw new InvalidDataException();
@@ -220,8 +221,8 @@ namespace OGXbdmDumper
             using var bw = new BinaryWriter(fs);
             for (int i = 0; i < eepromSize; i++)
             {
-                xbox.Kernel.HalReadSMBusValue(0xA8, i, false, xbox.ScratchBuffer.Address);
-                bw.Write(xbox.Memory.ReadByte(xbox.ScratchBuffer.Address));
+                xbox.Kernel.HalReadSMBusValue(0xA8, i, false, xbox.StaticScratch.Region.Address);
+                bw.Write(xbox.Memory.ReadByte(xbox.StaticScratch.Region.Address));
                 progress.AsProgress<float>().Report((float)i / eepromSize);
             }
             progress.AsProgress<float>().Report(1.0f);
@@ -264,8 +265,15 @@ namespace OGXbdmDumper
             if (!YesNo("Dump HDD image?"))
                 return;
 
-            // expand scratch buffer and switch to unsafe mode for increased performance
-            xbox.ExpandScratchBuffer();
+            // attempt to allocate a larger scratch buffer and switch to unsafe mode for increased performance
+            int scratchSize = 1024 * 1024;
+            uint scratch = (uint)xbox.Kernel.MmAllocateContiguousMemory(scratchSize);
+            if (scratch == 0)
+            {
+                scratch = xbox.StaticScratch.Region.Address;
+                scratchSize = xbox.StaticScratch.Region.Size;
+            }
+
             xbox.SafeMode = false;
 
             Log.Information("Dumping HDD image.");
@@ -286,8 +294,6 @@ namespace OGXbdmDumper
             //    dd	FileName	; PCHAR Buffer
             // FileName: + 32
             // db	"\Device\Harddisk0\Partition0", 0
-            uint scratch = xbox.ScratchBuffer.Address;
-            uint scratchSize = xbox.ScratchBuffer.Size;
             uint fileHandleAddr = scratch;
             uint iOStatusBlockAddr = scratch + 4;
             uint objectAttributesAddr = scratch + 12;
@@ -353,7 +359,7 @@ namespace OGXbdmDumper
             // get the required 4KB-aligned/sized buffer within scratch space
             uint bufferAddress = scratch + 16; // first 16 bytes of scratch is reserved for NtReadFile args
             bufferAddress = (bufferAddress + 0xFFF) & 0xFFFFF000; // align up to the next 4KB
-            uint bufferSize = scratch + scratchSize - bufferAddress;
+            uint bufferSize = (uint)(scratch + scratchSize - bufferAddress);
             bufferSize &= 0xFFFFF000; // align down to the next 4KB
             byte[] buffer = new byte[bufferSize];
 
@@ -406,6 +412,7 @@ namespace OGXbdmDumper
 
             // cleanup
             xbox.Kernel.NtClose(handle);
+            xbox.Kernel.MmFreeContiguousMemory(scratch);
         }
 
         private static void DumpDirectory(Xbox xbox, string remotePath, string localPath)
