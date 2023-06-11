@@ -1,6 +1,7 @@
 ﻿using Serilog;
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -130,8 +131,15 @@ namespace OGXbdmDumper
             if (!response.Success)
                 throw new Exception(response.Full);
 
+            // check connection quality
+            var endpoint = _client.Client.RemoteEndPoint as IPEndPoint;
+            var ping = new Ping().Send(endpoint.Address);
+            if (ping.RoundtripTime > 1)
+            {
+                Log.Warning("Elevated network latency of {0}ms detected. Please have wired connectivity to your Xbox for fastest results.", ping.RoundtripTime);
+            }
 
-            return new ConnectionInfo((IPEndPoint)_client.Client.RemoteEndPoint);
+            return new ConnectionInfo(endpoint);
         }
 
         /// <summary>
