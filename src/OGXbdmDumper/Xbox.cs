@@ -863,7 +863,7 @@ namespace OGXbdmDumper
                             new OdmPattern(0x0, new byte[] { 0x55 }),
 
                             // mov     ebp, esp
-                            new OdmPattern(0x0, new byte[] { 0x8B, 0xEC }),
+                            new OdmPattern(0x1, new byte[] { 0x8B, 0xEC }),
 
                             // push    'enoN'
                             new OdmPattern(0x3, new byte[] { 0x68, 0x4E, 0x6F, 0x6E, 0x65 })
@@ -879,11 +879,21 @@ namespace OGXbdmDumper
                             new OdmPattern(0xE, new byte[] { 0xC2, 0x04, 0x00 })
                         },
 
-                        // universal pattern
-                        new SodmaSignature("DmFreePool")
+                        // usual pattern
+                        new SodmaSignature("DMFreePool")
                         {
                             // cmp     eax, 0B0000000h
                             new OdmPattern(0xF, new byte[] { 0x3D, 0x00, 0x00, 0x00, 0xB0 })
+                        },
+
+                        // other pattern
+                        new SodmaSignature("DMFreePool")
+                        {
+                            // push    ebp
+                            new OdmPattern(0x0, new byte[] { 0x55 }),
+
+                            // cmp     eax, 0B0000000h
+                            new OdmPattern(0x10, new byte[] { 0x3D, 0x00, 0x00, 0x00, 0xB0 })
                         }
                     };
 

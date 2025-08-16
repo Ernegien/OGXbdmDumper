@@ -169,13 +169,13 @@ namespace OGXbdmDumper
         /// <param name="target">The xbox target.</param>
         /// <param name="hookAddress">The hook address.</param>
         /// <param name="caveAddress">The cave address.</param>
-        public static void Hook(this Assembler asm, Xbox target, long hookAaddress, long caveAddress)
+        public static void Hook(this Assembler asm, Xbox target, long hookAddress, long caveAddress)
         {
             // store the pushret hook to the cave
             // TODO: combine writes!
-            target.Memory.Position = hookAaddress;
+            target.Memory.Position = hookAddress;
             target.Memory.Write((byte)0x68);    // push
-            target.Memory.Write(caveAddress);   // cave address
+            target.Memory.Write((uint)caveAddress);   // cave address
             target.Memory.Write((byte)0xC3);    // ret
         }
 
